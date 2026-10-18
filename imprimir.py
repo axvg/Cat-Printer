@@ -8,10 +8,11 @@ import io
 import os
 import sys
 import tempfile
+import time
 import urllib.request
 from urllib.parse import urlparse
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from printer import PrinterDriver
 from printer_lib.models import Models
@@ -27,6 +28,8 @@ FONT_PATH = FONTS["verdana"]
 FONT_SIZE = 20
 MARGIN = 0
 MODEL = "MX10"
+ATTEMPTS = 4
+THRESHOLD = 236
 
 
 def font(size=FONT_SIZE, name=None):
@@ -81,11 +84,24 @@ def text_to_image(text, size=FONT_SIZE, name=None):
     return [img]
 
 
-def fit(img):
+def fit(img, profile="foto"):
     img = img.convert("L")
     height = max(1, round(img.height * WIDTH / img.width))
     img = img.resize((WIDTH, height), Image.LANCZOS)
+    if profile == "linea":
+        return threshold(img)
     return img.convert("1")  # Floyd-Steinberg dither, PIL default
+
+
+def threshold(img, level=THRESHOLD):
+    """Flatten uneven lighting, then threshold. For photos of ink on paper.
+
+    Subtracting a heavily blurred copy removes the lighting gradient: where the
+    pixel matches its surroundings the result is white, only strokes stay dark.
+    """
+    background = img.filter(ImageFilter.GaussianBlur(radius=max(img.size) // 16))
+    flat = ImageChops.subtract(img, background, scale=1.0, offset=255)
+    return flat.point(lambda value: 255 if value > level else 0, mode="1")
 
 
 def pdf_to_images(path):
@@ -116,7 +132,7 @@ def download(url):
     return path
 
 
-def load(path, size=FONT_SIZE, name=None, ascii_art=False):
+def load(path, size=FONT_SIZE, name=None, ascii_art=False, profile="foto"):
     if path.startswith(("http://", "https://")):
         path = download(path)
     ext = os.path.splitext(path)[1].lower()
@@ -127,7 +143,7 @@ def load(path, size=FONT_SIZE, name=None, ascii_art=False):
     if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
         img = Image.open(path)
         img.seek(0)  # animated gif/webp: first frame
-        return [fit(img)]
+        return [fit(img, profile)]
     if ext == ".pdf":
         return pdf_to_images(path)
     sys.exit(f"unsupported extension: {ext or path}")
@@ -156,6 +172,8 @@ def main():
     ap.add_argument("--dry", action="store_true", help="print process only, no paper")
     ap.add_argument("--fake", action="store_true", help="no printer, no bluetooth")
     ap.add_argument("--size", type=int, default=FONT_SIZE, help="font size for txt/md")
+    ap.add_argument("--profile", choices=["foto", "linea"], default="foto",
+                    help="linea: ink on paper, threshold instead of dither")
     ap.add_argument("--quality", type=int, choices=[1, 2, 3, 4], default=1,
                     help="1 prints most evenly on this MX10")
     ap.add_argument("--speed", type=int, help="raw speed, overrides --quality")
@@ -165,7 +183,7 @@ def main():
     ap.add_argument("--energy", type=float, default=0.5, help="0.0-1.0 thermal strength")
     args = ap.parse_args()
 
-    sheet = stack(load(args.file, args.size, args.font, args.ascii))
+    sheet = stack(load(args.file, args.size, args.font, args.ascii, args.profile))
     print(f"{args.file}: {sheet.width}x{sheet.height} px")
 
     printer = PrinterDriver()
@@ -175,9 +193,19 @@ def main():
     printer.speed = args.speed or 4 * (args.quality + 5)  # same mapping as printer.py -q
     printer.fake = args.fake
     printer.model = Models[MODEL]
-    # Windows needs a fresh scan before connecting, so --addr filters the scan
-    # instead of connecting straight to the address
-    printer.print(io.BytesIO(to_pbm(sheet)), mode="pbm", identifier=args.addr or MODEL)
+    # the printer stops advertising for a few seconds after a job, so retry
+    data = io.BytesIO(to_pbm(sheet))
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            printer.print(data, mode="pbm", identifier=args.addr or MODEL)
+            break
+        except Exception as error:
+            printer.device = None
+            if attempt == ATTEMPTS:
+                raise
+            print(f"intento {attempt}/{ATTEMPTS}: {type(error).__name__}, reintento en 6 s")
+            time.sleep(6)
+            data.seek(0)
     printer.unload()
 
 
@@ -189,6 +217,7 @@ def demo():
     assert to_pbm(img[0]).startswith(b"P4")
     assert stack([img[0], img[0]]).height == 2 * img[0].height + 32
     assert fit(Image.new("RGB", (100, 50))).size == (WIDTH, 192)
+    assert fit(Image.new("RGB", (100, 50), "white"), "linea").getextrema() == (255, 255)
     art = ascii_to_image(("M" * 35) + chr(10) + "x")[0]
     assert art.width == WIDTH
     assert CONTENT_TYPES["image/png"] == ".png"
