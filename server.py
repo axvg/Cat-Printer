@@ -17,6 +17,7 @@ import webbrowser
 
 # For now we can't use `ThreadingHTTPServer`
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs
 
 # import `printer` first, to diagnostic some common errors
 from printer import PrinterDriver, PrinterError, i18n, info
@@ -85,7 +86,6 @@ class PrinterServerHandler(BaseHTTPRequestHandler):
     _settings_blacklist = (
         'printer', 'is_android'
     )
-    all_script: list = []
 
     printer: PrinterDriver = PrinterDriver()
 
@@ -113,16 +113,6 @@ class PrinterServerHandler(BaseHTTPRequestHandler):
             return
         if path == '/':
             path += 'index.html'
-        # special
-        if path.startswith('/~'):
-            action = path[2:]
-            if action == 'every.js':
-                self.send_response(200)
-                self.send_header('Content-Type', mime(path))
-                self.end_headers()
-                for data in concat_files(*(self.all_script), prefix_format='\n// {0}\n'):
-                    self.wfile.write(data)
-                return
         path = 'www' + path
         # not found
         if not os.path.isfile(path):
@@ -209,14 +199,48 @@ class PrinterServerHandler(BaseHTTPRequestHandler):
         self.printer.flip_v = self.settings.flip_v or self.settings.flip
         self.printer.rtl = self.settings.force_rtl
 
+    rendered: bytes = None
+    'PBM data of the last /render call, printed by /print with an empty body'
+
+    def handle_render(self, body, args):
+        ''' Convert an upload to printer bitmap with `imprimir`, keep the PBM for
+            `/print`, and answer with a PNG preview.
+        '''
+        import tempfile
+        import imprimir
+
+        source = args.get('url', [''])[0]
+        if not source:
+            suffix = os.path.splitext(args.get('name', ['x.png'])[0])[1].lower()
+            handle, source = tempfile.mkstemp(suffix=suffix)
+            with os.fdopen(handle, 'wb') as file:
+                file.write(body)
+        sheet = imprimir.stack(imprimir.load(
+            source,
+            size=int(args.get('size', [imprimir.FONT_SIZE])[0]),
+            name=args.get('font', [None])[0],
+            ascii_art=args.get('ascii', ['0'])[0] == '1'
+        ))
+        PrinterServerHandler.rendered = imprimir.to_pbm(sheet)
+        preview = io.BytesIO()
+        sheet.save(preview, format='PNG')
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/png')
+        self.send_header('X-Bitmap-Size', f'{sheet.width}x{sheet.height}')
+        self.end_headers()
+        self.wfile.write(preview.getvalue())
+
     def handle_api(self):
         'Handle API request from POST'
         content_length = int(self.headers.get('Content-Length'))
         body = self.rfile.read(content_length)
-        api = self.path[1:]
+        api, _, query = self.path[1:].partition('?')
+        if api == 'render':
+            self.handle_render(body, parse_qs(query))
+            return
         if api == 'print':
             self.update_printer()
-            self.printer.print(io.BytesIO(body))
+            self.printer.print(io.BytesIO(body or self.rendered))
             self.api_success()
             return
         data = DictAsObject(json.loads(body))
@@ -321,10 +345,6 @@ class PrinterServer(HTTPServer):
         if self.handler is None:
             self.handler = self.handler_class(request, client_address, self)
             self.handler.load_config()
-            with open(os.path.join('www', 'all-scripts.txt'), 'r', encoding='utf-8') as file:
-                for path in file.read().split('\n'):
-                    if path != '':
-                        self.handler.all_script.append(os.path.join('www', path))
             return
         self.handler.__init__(request, client_address, self)
 
