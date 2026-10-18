@@ -1,0 +1,3 @@
+Prueba Cat-Printer
+
+Texto largo para ver el salto de linea automatico en papel de 57 mm con 384 px de ancho.
