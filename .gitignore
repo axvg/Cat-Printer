@@ -51,3 +51,7 @@ test.png
 thumbs.db
 thumbs.db:encryptable
 env/
+
+# printer-term: personal test material, third party copyright
+haruhi.png
+*.gif
