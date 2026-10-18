@@ -29,7 +29,7 @@ FONT_SIZE = 20
 MARGIN = 0
 MODEL = "MX10"
 ATTEMPTS = 4
-THRESHOLD = 236
+THRESHOLD = 246
 
 
 def font(size=FONT_SIZE, name=None):
@@ -84,12 +84,12 @@ def text_to_image(text, size=FONT_SIZE, name=None):
     return [img]
 
 
-def fit(img, profile="foto"):
+def fit(img, profile="foto", level=THRESHOLD):
     img = img.convert("L")
     height = max(1, round(img.height * WIDTH / img.width))
     img = img.resize((WIDTH, height), Image.LANCZOS)
     if profile == "linea":
-        return threshold(img)
+        return threshold(img, level)
     return img.convert("1")  # Floyd-Steinberg dither, PIL default
 
 
@@ -132,7 +132,8 @@ def download(url):
     return path
 
 
-def load(path, size=FONT_SIZE, name=None, ascii_art=False, profile="foto"):
+def load(path, size=FONT_SIZE, name=None, ascii_art=False, profile="foto",
+         level=THRESHOLD):
     if path.startswith(("http://", "https://")):
         path = download(path)
     ext = os.path.splitext(path)[1].lower()
@@ -143,7 +144,7 @@ def load(path, size=FONT_SIZE, name=None, ascii_art=False, profile="foto"):
     if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
         img = Image.open(path)
         img.seek(0)  # animated gif/webp: first frame
-        return [fit(img, profile)]
+        return [fit(img, profile, level)]
     if ext == ".pdf":
         return pdf_to_images(path)
     sys.exit(f"unsupported extension: {ext or path}")
@@ -174,6 +175,8 @@ def main():
     ap.add_argument("--size", type=int, default=FONT_SIZE, help="font size for txt/md")
     ap.add_argument("--profile", choices=["foto", "linea"], default="foto",
                     help="linea: ink on paper, threshold instead of dither")
+    ap.add_argument("--threshold", type=int, default=THRESHOLD,
+                    help="line profile: higher catches fainter strokes")
     ap.add_argument("--quality", type=int, choices=[1, 2, 3, 4], default=1,
                     help="1 prints most evenly on this MX10")
     ap.add_argument("--speed", type=int, help="raw speed, overrides --quality")
@@ -183,7 +186,8 @@ def main():
     ap.add_argument("--energy", type=float, default=0.5, help="0.0-1.0 thermal strength")
     args = ap.parse_args()
 
-    sheet = stack(load(args.file, args.size, args.font, args.ascii, args.profile))
+    sheet = stack(load(args.file, args.size, args.font, args.ascii, args.profile,
+                       args.threshold))
     print(f"{args.file}: {sheet.width}x{sheet.height} px")
 
     printer = PrinterDriver()
