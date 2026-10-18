@@ -333,8 +333,12 @@ class PrinterDriver(Commander):
         self._pending_data = io.BytesIO()
         if self.fake:
             return
-        if (self.device is not None and address is not None and
-            (self.device.address.lower() == address.lower())):
+        # `address` may be a BLEDevice. On Windows, connecting with the object
+        # the scan returned works where connecting with a bare address fails
+        # https://github.com/hbldh/bleak/issues/1545
+        address_text = getattr(address, 'address', address)
+        if (self.device is not None and address_text is not None and
+            (self.device.address.lower() == address_text.lower())):
             return
         try:
             if self.device is not None and self.device.is_connected:
@@ -395,7 +399,7 @@ class PrinterDriver(Commander):
             else:
                 devices = [dev for dev in devices if dev.address.lower() == identifier.lower()]
         if use_result and len(devices) != 0:
-            self.connect(devices[0].name, devices[0].address)
+            self.connect(devices[0].name, devices[0])
         return devices
 
     def print(self, file: io.BufferedIOBase, *, mode='default',
